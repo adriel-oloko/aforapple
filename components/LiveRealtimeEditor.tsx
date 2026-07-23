@@ -108,7 +108,7 @@ export default function LiveRealtimeEditor() {
 	const [status, setStatus] = useState<ConnectionStatus>("idle");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const [prompt, setPrompt] = useState(
-		"Substitute the character in the video with the person in the reference image.",
+		"Substitute the character in the video with the person in the reference image",//. Maintain photorealistic skin texture, sharp facial features, and cinematic lighting. Output at maximum sharpness with no blur or artifacts.",
 	);
 	const [expanded, setExpanded] = useState(false);
 

@@ -56,8 +56,25 @@ export async function GET(req: Request) {
       );
     }
 
-    const token = await res.text();
-    return new Response(token);
+    // The fal REST /tokens/ endpoint returns the JWT as a JSON-encoded
+    // string literal (i.e. the raw token wrapped in quotes: "eyJ...").
+    // We must return the *bare* token to the browser; the @fal-ai/client
+    // TokenProvider contract expects a plain string. If we pass the
+    // quoted value through, the quotes end up URL-encoded as %22 in the
+    // WebSocket URL and the connection fails.
+    const raw = await res.text();
+    let token = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === "string") token = parsed;
+    } catch {
+      // Not JSON — fall back to the raw body, trimmed of stray quotes.
+      token = raw.trim().replace(/^"|"$/g, "");
+    }
+
+    return new Response(token, {
+      headers: { "Content-Type": "text/plain" },
+    });
   } catch (err) {
     return Response.json(
       {
