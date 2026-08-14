@@ -1,11 +1,21 @@
-PyQt6==6.7.1
+﻿PyQt6==6.7.1
 opencv-python==4.10.0.84
+# aiortc==1.9.0 pins av<13.0.0, and av has no prebuilt wheels below 13.x
+# for Python 3.13 -- pip falls back to compiling PyAV from source, which
+# needs a full FFmpeg dev toolchain and fails on most Windows machines
+# with "Cannot open include file: libavutil/mathematics.h". aiortc>=1.14
+# requires av>=14.0.0, which does ship prebuilt Windows/py3.13 wheels.
 aiortc>=1.14.0,<1.16.0
-websockets==13.1
 aiohttp==3.10.10
+fal-client>=0.5.6
+websockets>=14.0
+httpx>=0.28.1
+httpx-ws>=0.9.0
+ormsgpack>=1.12.0
 python-dotenv==1.0.1
 sounddevice>=0.4.7
 numpy>=1.26.4
 assemblyai>=0.64.0
 fish-audio-sdk>=1.3.0
 qasync==0.27.1
+

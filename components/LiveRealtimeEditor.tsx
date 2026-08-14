@@ -430,7 +430,7 @@ export default function LiveRealtimeEditor() {
 										? "Playing in expanded view"
 										: isBusy
 											? "Connecting…"
-											: "Edited feed will appear here"}
+											: ""}
 								</div>
 							)}
 						</div>

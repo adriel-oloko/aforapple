@@ -1,0 +1,9 @@
+# Voice Clone Studio — never commit secrets or runtime state
+.env
+data/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+logs/

@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import asyncio
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMainWindow, QScrollArea, QVBoxLayout, QWidget
 
 from services.config import Config
+from services.session_log import get_logger
 from ui.advanced_audio_widget import AdvancedAudioWidget
 from ui.live_editor_widget import LiveEditorWidget
+
+log = get_logger()
 
 
 class MainWindow(QMainWindow):
@@ -37,10 +41,17 @@ class MainWindow(QMainWindow):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        # Never let content push the window wider than its viewport --
+        # only vertical scrolling is allowed. Combined with the
+        # responsive (non-fixed-width) widgets below, the container's
+        # width always tracks the scroll area's viewport width instead
+        # of forcing a horizontal scrollbar.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(container)
         self.setCentralWidget(scroll)
 
     def closeEvent(self, event):  # noqa: N802
+        log.info("Main window closing")
         self._live_editor.shutdown()
         self._advanced_audio.shutdown()
         super().closeEvent(event)

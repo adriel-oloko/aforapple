@@ -1,0 +1,23 @@
+14:25:02 [INFO] live_editor: Session log started -> D:\video-stuff\pyqt-exec\logs\session-20260813-142502.log
+14:25:19 [INFO] live_editor: Starting Live Editor app
+14:25:29 [INFO] live_editor: Found 5 camera(s): ['Camera 0', 'Camera 1', 'Camera 2', 'Camera 3', 'Camera 5']
+14:25:30 [INFO] live_editor: Voice profile selected: Elon (reference=D:\video-stuff\pyqt-exec\profiles\Elon\elon.m4a, fillers=17, model=ccd9eaf828444cc5b1bbc711d7acf9ca)
+14:25:31 [INFO] live_editor: Window shown. Logging to D:\video-stuff\pyqt-exec\logs\session-20260813-142502.log
+14:26:07 [INFO] live_editor: Reference image selected: D:/video-stuff/pyqt-exec/faces/RileyGreen_2070-x-1080.jpg
+14:26:07 [INFO] live_editor: Uploading reference image to fal storage...
+14:26:12 [INFO] live_editor: Reference image uploaded: https://v3b.fal.media/files/b/0aa62d64/dyBFDpoudATkU-5wRsprm_RileyGreen_2070-x-1080.jpg
+14:31:20 [INFO] live_editor: Starting session (camera index 0)...
+14:31:21 [INFO] live_editor: Requesting realtime token from fal.ai...
+14:31:26 [INFO] live_editor: Stopping session...
+14:31:26 [INFO] live_editor: Session stopped
+14:31:34 [INFO] live_editor: Found 5 camera(s): ['Camera 0', 'Camera 1', 'Camera 2', 'Camera 3', 'Camera 5']
+14:31:37 [INFO] live_editor: Connected to fal realtime signaling channel
+14:31:37 [INFO] live_editor: Sent initial prompt to Lucy 2.5
+14:31:37 [INFO] live_editor: Received ICE servers, creating RTCPeerConnection
+14:31:39 [INFO] live_editor: Starting session (camera index 1)...
+14:31:39 [INFO] live_editor: Requesting realtime token from fal.ai...
+14:31:42 [INFO] live_editor: Connected to fal realtime signaling channel
+14:31:42 [INFO] live_editor: Sent initial prompt to Lucy 2.5
+14:31:42 [INFO] live_editor: Sent SDP offer
+14:31:52 [INFO] live_editor: Receiving edited output track
+14:31:52 [INFO] live_editor: Received SDP answer -- session is live

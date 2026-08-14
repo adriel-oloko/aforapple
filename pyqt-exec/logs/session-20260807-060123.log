@@ -1,0 +1,40 @@
+06:01:23 [INFO] live_editor: Session log started -> D:\video-stuff\pyqt-exec\logs\session-20260807-060123.log
+06:01:34 [INFO] live_editor: Starting Live Editor app
+06:01:42 [INFO] live_editor: Found 5 camera(s): ['Camera 0', 'Camera 1', 'Camera 2', 'Camera 3', 'Camera 5']
+06:01:43 [INFO] live_editor: Voice profile selected: Elon (reference=D:\video-stuff\pyqt-exec\profiles\Elon\elon.m4a, fillers=17, model=ccd9eaf828444cc5b1bbc711d7acf9ca)
+06:01:44 [INFO] live_editor: Window shown. Logging to D:\video-stuff\pyqt-exec\logs\session-20260807-060123.log
+06:03:51 [INFO] live_editor: Starting voice-clone pipeline (input device=Headset (oraimo SpaceBuds), output devices=['Headphones (oraimo SpaceBuds)'], model=ccd9eaf828444cc5b1bbc711d7acf9ca)
+06:03:51 [INFO] live_editor: Fish TTS start backend=s2.1-pro transport=websocket latency=low chunk_length=100 min_chunk_length=25 parallel=3 reference_id=ccd9eaf828444cc5b1bbc711d7acf9ca
+06:03:51 [INFO] live_editor: AssemblyAI streaming start model=universal-3-5-pro mode=min_latency min_turn_silence=250ms max_turn_silence=800ms max_tail_words=5 min_clause_words=2
+06:03:54 [INFO] live_editor: STT latency chunk_id=c1 current=34ms p50=34ms p95=34ms n=1
+06:03:54 [INFO] live_editor: Chunk ready -> cloning: Hello.
+06:03:56 [INFO] live_editor: STT latency chunk_id=c2 current=35ms p50=34ms p95=35ms n=2
+06:03:56 [INFO] live_editor: Chunk ready -> cloning: dear, how you doing?
+06:03:58 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c1 current=2990ms p50=2990ms p95=2990ms n=1
+06:03:59 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c2 current=2764ms p50=2877ms p95=2990ms n=2
+06:04:03 [INFO] live_editor: STT latency chunk_id=c3 current=27ms p50=34ms p95=35ms n=3
+06:04:03 [INFO] live_editor: Chunk ready -> cloning: So yeah.
+06:04:04 [INFO] live_editor: STT latency chunk_id=c4 current=29ms p50=31ms p95=35ms n=4
+06:04:04 [INFO] live_editor: Chunk ready -> cloning: e fine, right?
+06:04:07 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c3 current=2695ms p50=2764ms p95=2990ms n=3
+06:04:08 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c4 current=2753ms p50=2759ms p95=2990ms n=4
+06:04:14 [INFO] live_editor: STT latency chunk_id=c5 current=38ms p50=34ms p95=38ms n=5
+06:04:14 [INFO] live_editor: Chunk ready -> cloning: So you're fine, right?
+06:04:18 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c5 current=2795ms p50=2764ms p95=2990ms n=5
+06:04:43 [INFO] live_editor: STT latency chunk_id=c6 current=36ms p50=34ms p95=38ms n=6
+06:04:43 [INFO] live_editor: Chunk ready -> cloning: Yeah.
+06:04:44 [INFO] live_editor: STT latency chunk_id=c7 current=27ms p50=34ms p95=38ms n=7
+06:04:44 [INFO] live_editor: Chunk ready -> cloning: workshop.
+06:04:45 [INFO] live_editor: STT latency chunk_id=c8 current=34ms p50=34ms p95=38ms n=8
+06:04:45 [INFO] live_editor: Chunk ready -> cloning: 2 options. I will sell— I can sell
+06:04:45 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c6 current=2459ms p50=2759ms p95=2990ms n=6
+06:04:46 [INFO] live_editor: STT latency chunk_id=c9 current=54ms p50=34ms p95=54ms n=9
+06:04:46 [INFO] live_editor: Chunk ready -> cloning: , um, cell phone case.
+06:04:47 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c7 current=2498ms p50=2753ms p95=2990ms n=7
+06:04:51 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c8 current=2998ms p50=2759ms p95=2998ms n=8
+06:04:52 [INFO] live_editor: TTS latency backend=s2.1-pro transport=websocket chunk_id=c9 current=2738ms p50=2753ms p95=2998ms n=9
+06:04:53 [INFO] live_editor: Stopping voice-clone pipeline
+06:34:45 [INFO] live_editor: Main window closing
+06:34:45 [INFO] live_editor: Stopping session...
+06:34:45 [INFO] live_editor: Session stopped
+06:34:45 [INFO] live_editor: App exiting

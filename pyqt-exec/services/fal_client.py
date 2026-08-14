@@ -17,56 +17,28 @@ original LiveRealtimeEditor.tsx.
 """
 
 from __future__ import annotations
+import aiohttp
+import fal_client as fal_sdk
 
 import asyncio
-import json
 import mimetypes
 from pathlib import Path
 from typing import Callable, Optional
 
-import aiohttp
-import websockets
+from services.session_log import get_logger
+
+log = get_logger()
+
 
 REST_API_URL = "https://rest.fal.ai"
-REALTIME_WS_URL = "wss://fal.run/decart/lucy-2-5/realtime"
-MODEL_ALIAS = "lucy-2-5"
-TOKEN_EXPIRATION_SECONDS = 120
+# Application id for fal_client's AsyncClient.realtime() -- it appends the
+# `/realtime` path itself by default, matching
+# wss://fal.run/decart/lucy-2-5/realtime.
+REALTIME_APP_ID = "decart/lucy-2-5"
 
 
 class FalAuthError(RuntimeError):
     pass
-
-
-async def get_realtime_token(fal_key: str) -> str:
-    """Mints a short-lived JWT scoped to the Lucy realtime app.
-    Port of GET /api/fal/token.
-    """
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{REST_API_URL}/tokens/",
-            headers={
-                "Authorization": f"Key {fal_key}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            json={
-                "allowed_apps": [MODEL_ALIAS],
-                "token_expiration": TOKEN_EXPIRATION_SECONDS,
-            },
-        ) as res:
-            raw = await res.text()
-            if res.status != 200:
-                raise FalAuthError(f"Token request failed ({res.status}): {raw}")
-
-            # fal returns the JWT as a JSON-encoded string literal ("eyJ...").
-            # Unwrap it the same way the original route.ts does.
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, str):
-                    return parsed
-            except json.JSONDecodeError:
-                pass
-            return raw.strip().strip('"')
 
 
 async def upload_reference_image(fal_key: str, file_path: str) -> str:
@@ -74,18 +46,21 @@ async def upload_reference_image(fal_key: str, file_path: str) -> str:
     Port of POST /api/upload-reference.
     """
     path = Path(file_path)
-    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    mime_type = mimetypes.guess_type(
+        path.name)[0] or "application/octet-stream"
 
     async with aiohttp.ClientSession() as session:
         # Step 1: request an upload URL from fal storage.
         async with session.post(
             f"{REST_API_URL}/storage/upload/initiate",
-            headers={"Authorization": f"Key {fal_key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Key {fal_key}",
+                     "Content-Type": "application/json"},
             json={"content_type": mime_type, "file_name": path.name},
         ) as res:
-            if res.status != 200:
+            if not (200 <= res.status < 300):
                 text = await res.text()
-                raise FalAuthError(f"Storage initiate failed ({res.status}): {text}")
+                raise FalAuthError(
+                    f"Storage initiate failed ({res.status}): {text}")
             data = await res.json()
             upload_url = data["upload_url"]
             file_url = data["file_url"]
@@ -99,7 +74,8 @@ async def upload_reference_image(fal_key: str, file_path: str) -> str:
         ) as put_res:
             if put_res.status not in (200, 201, 204):
                 text = await put_res.text()
-                raise FalAuthError(f"Storage upload failed ({put_res.status}): {text}")
+                raise FalAuthError(
+                    f"Storage upload failed ({put_res.status}): {text}")
 
     return file_url
 
@@ -113,50 +89,74 @@ class RealtimeConnection:
     an `iceServers` message, then we create an RTCPeerConnection, send
     an SDP offer, receive an SDP answer, and trade ICE candidates.
 
-    This class only owns the signaling WebSocket. The actual
+    This class only owns the signaling channel. The actual
     RTCPeerConnection is driven by the caller (see live_editor_widget.py)
     since aiortc's PeerConnection needs to live alongside the video
     tracks and callbacks.
+
+    Wire format: per fal's own docs ("the realtime client uses msgpack
+    for binary serialization by default across all SDKs"), *every*
+    message on this channel -- in both directions -- is msgpack, not
+    JSON. A previous version of this class got the two directions out
+    of sync: incoming frames were correctly msgpack-decoded, but
+    outgoing ones (including the SDP `offer`) were sent as plain JSON
+    text via `ws.send(json.dumps(...))`. fal's relay can't parse that,
+    so it silently drops our offer and, having never received a valid
+    one, eventually emits `{"error": "TIMEOUT"}`.
+
+    Rather than hand-roll the wire format again (and risk the same
+    class of bug), this wraps the official `fal_client` SDK's
+    `AsyncClient.realtime()` (an async context manager), which owns
+    encode/decode -- and token minting -- itself and is kept in sync
+    with fal's protocol upstream. Note: the module-level convenience
+    function `fal_client.realtime_async()` is a *different* thing (it
+    uses a default singleton client) -- the method on an `AsyncClient`
+    instance is just `.realtime()`.
     """
 
     def __init__(self, fal_key: str, on_message: Callable[[dict], None], on_error: Callable[[str], None]):
         self._fal_key = fal_key
         self._on_message = on_message
         self._on_error = on_error
-        self._ws: Optional[websockets.WebSocketClientProtocol] = None
+        self._client = fal_sdk.AsyncClient(key=fal_key)
+        self._ctx = None
+        self._connection = None
         self._recv_task: Optional[asyncio.Task] = None
         self._closed = False
 
     async def connect(self):
-        token = await get_realtime_token(self._fal_key)
-        url = f"{REALTIME_WS_URL}?fal_jwt_token={token}"
-        self._ws = await websockets.connect(url, max_size=None)
+        self._ctx = self._client.realtime(REALTIME_APP_ID)
+        self._connection = await self._ctx.__aenter__()
         self._recv_task = asyncio.create_task(self._recv_loop())
 
     async def _recv_loop(self):
-        assert self._ws is not None
+        assert self._connection is not None
         try:
-            async for raw in self._ws:
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
+            while True:
+                msg = await self._connection.recv()
+                if msg is None:
+                    continue
+                if not isinstance(msg, dict):
+                    log.debug("Ignoring non-dict realtime message: %r", msg)
                     continue
                 self._on_message(msg)
-        except websockets.ConnectionClosed:
-            pass
+        except asyncio.CancelledError:
+            raise
         except Exception as err:  # noqa: BLE001
             if not self._closed:
                 self._on_error(str(err))
 
     async def send(self, payload: dict):
-        if self._ws is None:
+        if self._connection is None:
             raise RuntimeError("Not connected")
-        await self._ws.send(json.dumps(payload))
+        await self._connection.send(payload)
 
     async def close(self):
         self._closed = True
         if self._recv_task:
             self._recv_task.cancel()
-        if self._ws:
-            await self._ws.close()
-        self._ws = None
+            self._recv_task = None
+        if self._ctx is not None:
+            await self._ctx.__aexit__(None, None, None)
+            self._ctx = None
+            self._connection = None

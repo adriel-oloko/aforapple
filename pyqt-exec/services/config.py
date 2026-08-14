@@ -12,7 +12,47 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(_ENV_PATH)
+
+
+def _load_env_file(path: Path) -> None:
+    """Load the .env file, tolerating files that aren't valid UTF-8.
+
+    python-dotenv's load_dotenv() always opens the file as utf-8. On
+    Windows it's easy to end up with a .env saved as cp1252/"ANSI"
+    (e.g. Notepad, or an editor that auto-"smart-quotes" a dash or
+    ellipsis in a comment line) -- that raises
+    UnicodeDecodeError: 'utf-8' codec can't decode byte 0x85 ...
+    the moment load_dotenv() reads the file.
+
+    To be robust to that, if the file exists but isn't valid UTF-8, we
+    re-encode it to UTF-8 in memory (via stream_from_str) instead of
+    letting the app crash on startup over a text-encoding mismatch.
+    """
+    if not path.exists():
+        return
+
+    try:
+        raw = path.read_bytes()
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        from dotenv import load_dotenv as _load_dotenv  # noqa: F401
+        from dotenv.main import DotEnv
+
+        text = raw.decode("cp1252", errors="replace")
+        DotEnv(
+            dotenv_path=None,
+            stream=__import__("io").StringIO(text),
+            verbose=True,
+            interpolate=True,
+            override=False,
+            encoding="utf-8",
+        ).set_as_environment_variables()
+        return
+
+    load_dotenv(path)
+
+
+_load_env_file(_ENV_PATH)
 
 
 @dataclass
