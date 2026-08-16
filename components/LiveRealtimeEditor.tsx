@@ -99,6 +99,12 @@ export default function LiveRealtimeEditor() {
 	const inputVideoRef = useRef<HTMLVideoElement>(null);
 	const outputVideoRef = useRef<HTMLVideoElement>(null);
 
+	// The output MediaStream outlives any single <video> element: the same ref
+	// is bound to two different elements (main panel vs. expanded overlay) that
+	// mount/unmount when the view toggles. Hold the stream here and re-attach
+	// it to whichever element currently owns outputVideoRef.
+	const outputStreamRef = useRef<MediaStream | null>(null);
+
 	const localStreamRef = useRef<MediaStream | null>(null);
 	const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
 	const connectionRef = useRef<ReturnType<
@@ -129,6 +135,7 @@ export default function LiveRealtimeEditor() {
 		connectionRef.current = null;
 		localStreamRef.current?.getTracks().forEach((t) => t.stop());
 		localStreamRef.current = null;
+		outputStreamRef.current = null;
 		if (inputVideoRef.current) inputVideoRef.current.srcObject = null;
 		if (outputVideoRef.current) outputVideoRef.current.srcObject = null;
 	}, []);
@@ -141,6 +148,16 @@ export default function LiveRealtimeEditor() {
 				URL.revokeObjectURL(referenceImagePreview);
 		};
 	}, [referenceImagePreview]);
+
+	// The output <video> element is swapped when the view toggles (the main
+	// panel video unmounts and the overlay video mounts, or vice versa). The
+	// freshly mounted element has no srcObject, so re-attach the saved stream
+	// to whatever element owns outputVideoRef after each swap.
+	useEffect(() => {
+		if (outputStreamRef.current && outputVideoRef.current) {
+			outputVideoRef.current.srcObject = outputStreamRef.current;
+		}
+	}, [expanded]);
 
 	// Close expanded view with Escape
 	useEffect(() => {
@@ -176,6 +193,7 @@ export default function LiveRealtimeEditor() {
 					.forEach((track) => pc.addTrack(track, stream));
 
 				pc.ontrack = (e) => {
+					outputStreamRef.current = e.streams[0];
 					if (outputVideoRef.current)
 						outputVideoRef.current.srcObject = e.streams[0];
 					setStatus("live");
@@ -373,7 +391,7 @@ export default function LiveRealtimeEditor() {
 			)}
 
 			{/* ── Main panel ── */}
-			<div className="w-full max-w-5xl mx-auto p-6 space-y-5 bg-black">
+			<div className="w-full mx-auto p-6 space-y-5 bg-black">
 				{/* Header */}
 				<div className="flex items-center justify-between gap-4 flex-wrap border-b border-white/10 pb-4">
 					<div>
