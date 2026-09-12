@@ -29,6 +29,45 @@ ICE servers, offer/answer), reference uploads, voice-clone pipeline
 start/stop, and every finalized transcript sent to Fish Audio are all
 logged. Errors are logged in addition to being shown in the UI.
 
+## Realtime session lifecycle (the concurrency cap)
+
+The model behind this app (Decart, served through fal as
+`decart/lucy-2-5/realtime`) caps how many realtime sessions one account may
+hold at once. Over the cap the *connect itself* is refused with WebSocket
+close code `1013` and the message **"Concurrent session limit reached."**
+
+A session is counted the moment its connection is authenticated and released
+the moment it closes, so any connection left open keeps occupying a slot until
+the server reaps it (Decart's docs put the worst case for a crashed gateway at
+about 45 seconds). That cap is **account-wide**: this desktop app, the Next.js
+web editor, and any stray browser tab all draw on the same budget. Decart
+exposes the current numbers, but the endpoint only answers to a Decart API key
+-- `FAL_KEY` will not work there, so this readout is only available if you also
+have a Decart key:
+
+```bash
+curl -H "x-api-key: $DECART_API_KEY" https://api.decart.ai/v1/realtime/quota
+# { "limit": ..., "active": ..., "remaining": ... }
+```
+
+What the app does about it:
+
+- **Starting a session kills every previous one first** (`_kill_previous_session`
+  before the camera is opened). A connection that was never closed is
+  unreachable and unkillable, which is exactly what made the next start fail.
+- A failed connect tears its own session down (`_teardown_webrtc` +
+  `_release_capture` in `_connect_webrtc`'s error path), so a bad attempt
+  cannot poison the next one.
+- A signaling error tears down the connection it belonged to.
+- `_teardown_webrtc` detaches its refs *before* its first `await`, so a start
+  that lands while a teardown is suspended cannot have its own new connection
+  closed, nor its refs cleared, by that teardown.
+- Closing the window stops the session, so shutting the app releases the slot
+  instead of holding it.
+
+If a start is still rejected, wait for the slot to drain (up to ~45s) rather
+than reinstalling or restarting anything: the error message says so in the UI.
+
 ## Why this differs from the original architecturally
 
 The Next.js app ran three small server routes whose *only* job was

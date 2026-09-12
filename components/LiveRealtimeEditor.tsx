@@ -27,6 +27,71 @@ const tokenProvider: TokenProvider = async (app) => {
 
 const MODEL_ENDPOINT = "decart/lucy-2-5/realtime";
 
+// ── Session registry ─────────────────────────────────────────────────────────
+//
+// The model behind this endpoint (Decart) caps how many realtime sessions one
+// account may hold at once. A session is counted the moment its connection is
+// authenticated and released the moment it closes, so a connection that is
+// never closed keeps burning a slot until the server reaps it -- and the next
+// `fal.realtime.connect()` is rejected with WebSocket close code 1013,
+// "Concurrent session limit reached."
+//
+// `fal.realtime.connect()` returns a handle, but the connection itself lives in
+// the SDK's module-level cache, keyed by `connectionKey`. Storing just the
+// newest handle in a ref therefore orphans every earlier connection: nothing
+// can close them any more. They are registered here instead, so starting a new
+// session can kill all of the previous ones first.
+type RealtimeConnectionHandle = ReturnType<
+	typeof fal.realtime.connect<LiveRealtimeInput>
+>;
+
+const openSessions = new Set<RealtimeConnectionHandle>();
+
+// Other tabs of this app keep their own connections (and their own copy of the
+// registry above), so the kill is broadcast to them as well.
+const SESSION_KILL_CHANNEL = "live-editor-session-kill";
+
+function closeSession(connection: RealtimeConnectionHandle) {
+	openSessions.delete(connection);
+	try {
+		connection.close();
+	} catch {
+		// Already closed, or torn down by the SDK after a hard disconnect.
+	}
+}
+
+/** Kills every realtime session this tab still has open. */
+function killLocalSessions() {
+	for (const connection of Array.from(openSessions)) closeSession(connection);
+}
+
+/** Asks every other tab of this app to kill its realtime sessions too. */
+function broadcastKillSessions() {
+	if (typeof window === "undefined" || !("BroadcastChannel" in window)) return;
+	const channel = new BroadcastChannel(SESSION_KILL_CHANNEL);
+	channel.postMessage({ type: "kill-sessions" });
+	channel.close();
+}
+
+// Decart rejects the connect itself when the cap is hit (close code 1013, with
+// the message "Concurrent session limit reached."). Its own docs note that
+// sessions from a crashed gateway keep counting for up to ~45s, so the
+// rejection is often transient and worth retrying rather than surfacing as a
+// dead end.
+function isConcurrencyLimitError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	const status = (error as { status?: unknown } | null)?.status;
+	return status === 1013 || /concurrent session limit/i.test(message);
+}
+
+const CONCURRENCY_RETRY_DELAYS_MS = [3000, 8000, 15000, 30000];
+
+function wait(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type ConnectOutcome = "live" | "concurrency" | "error";
+
 type ConnectionStatus =
 	| "idle"
 	| "requesting-camera"
@@ -128,10 +193,33 @@ export default function LiveRealtimeEditor() {
 
 	// ── cleanup ────────────────────────────────────────────────────────────────
 
+	// Bumped every time the live session is torn down. In-flight connects and
+	// retry waits compare against it so a session that was stopped can never
+	// resurrect itself (see `start`).
+	const sessionGenerationRef = useRef(0);
+
+	// Settled by the first terminal event of a connect attempt: the output
+	// track arriving ("live") or an error. Lets `start` await an attempt and
+	// decide whether the concurrency rejection is worth retrying.
+	const connectOutcomeRef = useRef<((outcome: ConnectOutcome) => void) | null>(
+		null,
+	);
+
+	// Every connect attempt takes a token and the newest one wins, so an error
+	// arriving from an attempt that was already superseded (or from a session
+	// the user stopped) cannot cancel the attempt that replaced it.
+	const attemptTokenRef = useRef(0);
+
 	const cleanup = useCallback(() => {
+		sessionGenerationRef.current += 1;
+		attemptTokenRef.current += 1;
+		connectOutcomeRef.current = null;
+		// Kill *every* connection this tab opened, not just the newest one: an
+		// orphaned handle is unreachable and keeps holding one of Decart's
+		// concurrent-session slots until the server times it out.
+		killLocalSessions();
 		peerConnectionRef.current?.close();
 		peerConnectionRef.current = null;
-		connectionRef.current?.close();
 		connectionRef.current = null;
 		localStreamRef.current?.getTracks().forEach((t) => t.stop());
 		localStreamRef.current = null;
@@ -141,6 +229,36 @@ export default function LiveRealtimeEditor() {
 	}, []);
 
 	useEffect(() => () => cleanup(), [cleanup]);
+
+	// Another tab is starting a session: only one may be live, so this tab
+	// drops whatever it holds and returns to idle.
+	useEffect(() => {
+		if (typeof window === "undefined" || !("BroadcastChannel" in window))
+			return;
+		const channel = new BroadcastChannel(SESSION_KILL_CHANNEL);
+		channel.onmessage = (event: MessageEvent) => {
+			const message = event.data as { type?: string } | null;
+			if (message?.type !== "kill-sessions") return;
+			cleanup();
+			setStatus("idle");
+			setExpanded(false);
+		};
+		return () => {
+			channel.onmessage = null;
+			channel.close();
+		};
+	}, [cleanup]);
+
+	// Refresh / navigate away: release the session now instead of leaving it
+	// counted against the cap until the server reaps it.
+	useEffect(() => {
+		const releaseOnExit = () => {
+			killLocalSessions();
+			peerConnectionRef.current?.close();
+		};
+		window.addEventListener("pagehide", releaseOnExit);
+		return () => window.removeEventListener("pagehide", releaseOnExit);
+	}, []);
 
 	useEffect(() => {
 		return () => {
@@ -196,7 +314,12 @@ export default function LiveRealtimeEditor() {
 					outputStreamRef.current = e.streams[0];
 					if (outputVideoRef.current)
 						outputVideoRef.current.srcObject = e.streams[0];
+					setErrorMessage(null);
 					setStatus("live");
+					// The session is authenticated and producing frames: this
+					// attempt is the one that stuck, so stop retrying.
+					connectOutcomeRef.current?.("live");
+					connectOutcomeRef.current = null;
 				};
 
 				pc.onicecandidate = (e) => {
@@ -240,10 +363,14 @@ export default function LiveRealtimeEditor() {
 			if (result.error) {
 				setErrorMessage(String(result.error));
 				setStatus("error");
+				connectOutcomeRef.current?.("error");
+				connectOutcomeRef.current = null;
 			}
 		} catch (err) {
 			setErrorMessage(err instanceof Error ? err.message : String(err));
 			setStatus("error");
+			connectOutcomeRef.current?.("error");
+			connectOutcomeRef.current = null;
 		}
 	}, []);
 
@@ -292,50 +419,125 @@ export default function LiveRealtimeEditor() {
 
 	// ── Session control ────────────────────────────────────────────────────────
 
+	// Opens one realtime connection and resolves when the attempt reaches a
+	// terminal state, so `start` can tell a transient concurrency rejection
+	// apart from a genuine failure.
+	const connectOnce = useCallback(
+		() =>
+			new Promise<ConnectOutcome>((resolve) => {
+				const token = attemptTokenRef.current + 1;
+				attemptTokenRef.current = token;
+
+				const finish = (outcome: ConnectOutcome) => {
+					if (connectOutcomeRef.current !== finish) return;
+					connectOutcomeRef.current = null;
+					resolve(outcome);
+				};
+				connectOutcomeRef.current = finish;
+
+				let connection: RealtimeConnectionHandle | null = null;
+
+				connection = fal.realtime.connect<LiveRealtimeInput>(
+					MODEL_ENDPOINT,
+					{
+						connectionKey: `live-session-${Date.now()}`,
+						tokenProvider,
+						tokenExpirationSeconds: 120,
+						onResult: handleResult,
+						onError: (err) => {
+							// Superseded attempt, or a session the user stopped:
+							// its connection is already closed, so its errors are
+							// not this attempt's problem.
+							if (attemptTokenRef.current !== token) return;
+							const message =
+								err instanceof Error ? err.message : String(err);
+							setErrorMessage(message);
+							if (connection) closeSession(connection);
+							if (isConcurrencyLimitError(err)) {
+								finish("concurrency");
+								return;
+							}
+							setStatus("error");
+							finish("error");
+						},
+					},
+				);
+				openSessions.add(connection);
+				connectionRef.current = connection;
+
+				connection.send({
+					prompt,
+					enable_prompt_expansion: true,
+					reference_image_url: referenceImageUrl ?? null,
+				});
+			}),
+		[handleResult, prompt, referenceImageUrl],
+	);
+
 	const start = useCallback(async () => {
 		setErrorMessage(null);
+		// Kill everything still live before opening a new session. A connection
+		// that was never closed keeps holding one of the account's concurrent
+		// slots, which is exactly what makes the next start fail with
+		// "Concurrent session limit reached."
+		cleanup();
+		broadcastKillSessions();
+
 		setStatus("requesting-camera");
+
+		const generation = sessionGenerationRef.current;
+		const isCurrent = () => sessionGenerationRef.current === generation;
 
 		try {
 			const stream = await navigator.mediaDevices.getUserMedia({
 				video: { width: { ideal: 1280 }, height: { ideal: 720 } },
 				audio: false,
 			});
+			if (!isCurrent()) {
+				stream.getTracks().forEach((track) => track.stop());
+				return;
+			}
 			localStreamRef.current = stream;
 			if (inputVideoRef.current) inputVideoRef.current.srcObject = stream;
 
 			setStatus("connecting");
 
-			const connection = fal.realtime.connect<LiveRealtimeInput>(
-				MODEL_ENDPOINT,
-				{
-					connectionKey: `live-session-${Date.now()}`,
-					tokenProvider,
-					tokenExpirationSeconds: 120,
-					onResult: handleResult,
-					onError: (err) => {
-						setErrorMessage(
-							err instanceof Error ? err.message : String(err),
-						);
-						setStatus("error");
-					},
-				},
-			);
-			connectionRef.current = connection;
+			for (
+				let attempt = 0;
+				attempt <= CONCURRENCY_RETRY_DELAYS_MS.length;
+				attempt += 1
+			) {
+				const outcome = await connectOnce();
+				if (!isCurrent() || outcome === "live" || outcome === "error") return;
 
-			connection.send({
-				prompt,
-				enable_prompt_expansion: true,
-				reference_image_url: referenceImageUrl ?? null,
-			});
+				const delay = CONCURRENCY_RETRY_DELAYS_MS[attempt];
+				if (delay === undefined) {
+					setErrorMessage(
+						"Concurrent session limit reached. Another realtime session is still active on this account (another tab, or the desktop app). Stop it, then start again.",
+					);
+					setStatus("error");
+					return;
+				}
+
+				setErrorMessage(
+					`Concurrent session limit reached -- releasing previous sessions, retrying in ${Math.round(
+						delay / 1000,
+					)}s...`,
+				);
+				await wait(delay);
+				if (!isCurrent()) return;
+				setStatus("connecting");
+			}
 		} catch (err) {
 			setErrorMessage(err instanceof Error ? err.message : String(err));
 			setStatus("error");
 			cleanup();
 		}
-	}, [cleanup, handleResult, prompt, referenceImageUrl]);
+	}, [cleanup, connectOnce]);
 
 	const stop = useCallback(() => {
+		// cleanup() closes every tracked connection, so stopping here also
+		// releases any orphaned session from an earlier start.
 		cleanup();
 		setStatus("idle");
 		setExpanded(false);
@@ -546,8 +748,7 @@ export default function LiveRealtimeEditor() {
 						<button
 							type="button"
 							onClick={stop}
-							disabled={isBusy}
-							className="border border-white/15 px-4 py-2 text-sm font-medium text-white/70 disabled:opacity-25 hover:bg-white/5 transition-colors">
+							className="border border-white/15 px-4 py-2 text-sm font-medium text-white/70 hover:bg-white/5 transition-colors">
 							Stop session
 						</button>
 					)}

@@ -66,6 +66,23 @@ VIDEO_BOX_MIN_HEIGHT = 120
 
 log = get_logger()
 
+# The model behind this endpoint (Decart) caps how many realtime sessions one
+# account may hold at once and rejects the excess connect with WebSocket close
+# code 1013, "Concurrent session limit reached." A session that ended without a
+# clean disconnect keeps counting for up to ~45s, so the useful advice is to
+# wait rather than to change anything in the app.
+_CONCURRENCY_HINT = (
+    " Another realtime session still holds a slot on the account (a previous "
+    "run of this app, or the web editor open in a browser). Wait about 45 "
+    "seconds for it to be released, then start again."
+)
+
+
+def _with_concurrency_hint(message: str) -> str:
+    if "concurrent session" not in message.lower():
+        return message
+    return message.rstrip() + _CONCURRENCY_HINT
+
 
 class _WebcamVideoTrack(VideoStreamTrack):
     """Wraps an OpenCV VideoCapture as an aiortc video track -- this is
@@ -472,12 +489,26 @@ class LiveEditorWidget(QWidget):
             self._on_error("No camera selected.")
             return
 
+        # Kill whatever session this app still holds before opening a new one.
+        # Every authenticated realtime connection occupies one of the
+        # account's concurrent-session slots until it is closed, so a session
+        # left over from an earlier attempt (a failed connect, or a stop that
+        # never reached the server) is what makes the next start fail with
+        # "Concurrent session limit reached."
+        self._kill_previous_session()
+
         log.info("Starting session (camera index %s)...", camera_index)
         self._status_changed.emit("requesting")
+
+        # Release any handle an earlier attempt left behind before opening a new
+        # one, so a failed start can never orphan a capture (or silently hold
+        # the camera against another app).
+        self._release_capture()
         self._capture = cv2.VideoCapture(camera_index)
         if not self._capture.isOpened():
             log.error("Could not open camera index %s", camera_index)
             self._on_error(f"Could not open camera (index {camera_index}).")
+            self._capture = None
             return
 
         self._capture_timer = QTimer(self)
@@ -490,41 +521,76 @@ class LiveEditorWidget(QWidget):
 
         asyncio.run_coroutine_threadsafe(self._connect_webrtc(), self._loop)
 
-    def _stop_session(self):
-        log.info("Stopping session...")
+    def _kill_previous_session(self):
+        """Tears down any realtime session this app still holds.
+
+        Called before a new session starts. Every authenticated realtime
+        connection occupies one of the account's concurrent-session slots
+        until it closes, so a session left behind by an earlier attempt is
+        exactly what makes a fresh start fail with "Concurrent session limit
+        reached." Nothing here touches the UI state: the caller is about to
+        set it up for the new session anyway.
+        """
+        if not (self._pc or self._connection):
+            return
+        log.info("Killing the previous realtime session before starting a new one")
+        asyncio.run_coroutine_threadsafe(self._teardown_webrtc(), self._loop)
+
+    def _release_capture(self):
+        """Stops the preview pump and releases the webcam handle.
+
+        The release happens under the same lock `_WebcamVideoTrack.recv()`
+        reads with: releasing a Windows MSMF capture while a reader is
+        mid-read corrupts its internal state.
+        """
         if self._capture_timer:
             self._capture_timer.stop()
             self._capture_timer = None
-        if self._capture:
-            with self._capture_lock:
-                if self._webcam_track is not None:
-                    self._webcam_track.stop_capture()
-                capture, self._capture = self._capture, None
-                capture.release()
+        if self._capture is None:
+            return
+        with self._capture_lock:
+            if self._webcam_track is not None:
+                self._webcam_track.stop_capture()
+                self._webcam_track = None
+            capture, self._capture = self._capture, None
+            capture.release()
 
-        if self._pc or self._connection:
-            asyncio.run_coroutine_threadsafe(self._teardown_webrtc(), self._loop)
-
+    def _reset_session_controls(self):
+        """Returns the session buttons to their idle (not-running) state."""
         self._start_btn.setVisible(True)
         self._stop_btn.setVisible(False)
         self._camera_combo.setEnabled(True)
         self._apply_btn.setEnabled(False)
         if self._expanded:
             self._collapse_expanded_view()
+
+    def _stop_session(self):
+        log.info("Stopping session...")
+        self._release_capture()
+
+        if self._pc or self._connection:
+            asyncio.run_coroutine_threadsafe(self._teardown_webrtc(), self._loop)
+
+        self._reset_session_controls()
         self._status_changed.emit("idle")
         log.info("Session stopped")
 
     async def _teardown_webrtc(self):
+        # Detach the refs *before* the first await. A start that lands while
+        # this teardown is suspended must not have its own (new) connection
+        # closed by it, nor have its refs cleared out from under it when this
+        # coroutine resumes.
         if self._ice_trickle_task:
             self._ice_trickle_task.cancel()
             self._ice_trickle_task = None
         self._sent_candidates.clear()
-        if self._connection:
-            await self._connection.close()
-            self._connection = None
-        if self._pc:
-            await self._pc.close()
-            self._pc = None
+        connection, self._connection = self._connection, None
+        pc, self._pc = self._pc, None
+        self._webcam_track = None
+        if connection:
+            await connection.close()
+        if pc:
+            await pc.close()
 
     async def _connect_webrtc(self):
         try:
@@ -536,7 +602,11 @@ class LiveEditorWidget(QWidget):
 
             def on_error(message: str):
                 log.error("fal realtime connection error: %s", message)
-                self._error_occurred.emit(message)
+                # The signaling channel died, so the connection it was
+                # carrying is gone too: make sure nothing of it is left
+                # holding a concurrent-session slot.
+                asyncio.run_coroutine_threadsafe(self._teardown_webrtc(), self._loop)
+                self._error_occurred.emit(_with_concurrency_hint(message))
 
             self._connection = fal_client.RealtimeConnection(
                 self._config.fal_key, on_message, on_error
@@ -556,7 +626,15 @@ class LiveEditorWidget(QWidget):
             log.info("Sent initial prompt to Lucy 2.5")
         except Exception as err:  # noqa: BLE001
             log.error("WebRTC connection failed: %s", err)
-            self._error_occurred.emit(str(err))
+            # A failed connect can still leave a half-open signaling socket
+            # behind. That connection keeps occupying one of the account's
+            # concurrent-session slots until the server reaps it, so close it
+            # here instead of letting the *next* start fail with "Concurrent
+            # session limit reached."
+            await self._teardown_webrtc()
+            self._release_capture()
+            self._reset_session_controls()
+            self._error_occurred.emit(_with_concurrency_hint(str(err)))
 
     # aiortc has no per-candidate "icecandidate" event the way a browser
     # does (see _trickle_ice_candidates below), so we poll for newly
@@ -699,7 +777,7 @@ class LiveEditorWidget(QWidget):
 
             if msg.get("error"):
                 log.error("Signaling error from fal: %s", msg["error"])
-                self._error_occurred.emit(str(msg["error"]))
+                self._error_occurred.emit(_with_concurrency_hint(str(msg["error"])))
         except Exception as err:  # noqa: BLE001
             log.error("Error handling signal: %s", err)
             self._error_occurred.emit(str(err))
